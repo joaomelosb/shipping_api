@@ -1,0 +1,11 @@
+version: "3.8"
+services:
+  shipping_api:
+    build:
+      context: ./services/shipping
+      dockerfile: Dockerfile
+    ports:
+      - "4040:4040"
+    environment:
+      - TOKEN=4026c0237414e704e67ecc5e1e4d5b3cbbb54cd8bd22e2210fc9148e3176051f
+    restart: unless-stopped
