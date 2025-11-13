@@ -90,10 +90,15 @@ def shipping(data: Request, token: str = Header(...)) -> list:
 		raise HTTPException(403, 'Invalid access token')
 
 	session = requests.Session()
-	session.headers['User-Agent'] = USER_AGENT
+	session.headers = {
+		'User-Agent': USER_AGENT,
+		'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+		'Accept-Language': 'pt-BR,pt;q=0.9'
+	}
 
 	for variant in data.variants:
 		res = add_to_cart(session, variant)
+		print(f'site response: ({res.status_code}) \"{res.text}\"')
 
 	cart = res.json().get('cart', {})
 	products = cart.get('products', [])
