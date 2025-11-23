@@ -20,13 +20,39 @@ class Request(BaseModel):
 	zipcode: str
 	variants: list[Variant]
 
+def request_wrapper(
+	session: requests.Session,
+	url: str,
+	method: str = 'post',
+	data: dict = {},
+	headers: dict = {},
+	params: dict = {},
+	**kwargs
+):
+	def debug_field(field, name):
+		if field:
+			lines = "\n".join(f"{key}: {value}" for key, value in field.items())
+			print(f'{name}:\n{lines}\n----\n')
+
+	print(f'Performing {method.upper()} on {url}')
+	debug_field(data, 'POST fields')
+	debug_field(headers, 'Headers')
+	debug_field(params, 'GET fields')
+
+	res = getattr(session, method)(url, data = data, headers = headers, params = params, **kwargs)
+
+	print(f'Response ({res.status_code}): {json.dumps(res.text[:300] + ("..." if len(res.text) > 300 else ""))}')
+
+	return res
+
 def add_to_cart(session: requests.Session, variant: Variant) -> requests.Response:
-	return session.post(
+	return request_wrapper(
+		session,
 		f'{BASE_URL}/comprar/',
 		data = {
 			'add_to_cart': variant.product_id,
 			'variant_id': variant.id,
-			'variant[0]': variant.name,
+			'variation[0]': variant.name,
 			'quantity': variant.quantity,
 			'zipcode': '',
 			'add_to_cart_enhanced': '1'
@@ -37,7 +63,8 @@ def add_to_cart(session: requests.Session, variant: Variant) -> requests.Respons
 	)
 
 def go_to_checkout(session: requests.Session, products: list[dict]) -> str:
-	res = session.post(
+	res = request_wrapper(
+		session,
 		f'{BASE_URL}/comprar/',
 		data = {
 			**{f'quantity[{product.get("id")}]': product.get("quantity") for product in products},
@@ -60,9 +87,11 @@ def get_shipping_data(
 	cart: dict,
 	access_token: str,
 	keys: list[str] = []
-) -> list[dict]:
-	res = session.get(
+) -> dict:
+	res = request_wrapper(
+		session,
 		CHECKOUT_API_URL,
+		method = 'get',
 		params = {
 			'cartId': cart.get('id'),
 			'zipcode': zipcode,
@@ -75,15 +104,20 @@ def get_shipping_data(
 			'Authorization': f'Bearer {access_token}'
 		}
 	)
-	shipping_data = res.json().get('shipping_options', [])
+	json_res = res.json()
+
+	if 'errors' in json_res:
+		return {'error': True, 'message': 'Falhou em calcular frete', 'data': json_res}
+
+	shipping_data = json_res.get('shipping_options', [])
 
 	if len(keys):
 		shipping_data = list({key: option.get(key) for key in keys} for option in shipping_data)
 
-	return shipping_data
+	return {'error': False, 'shipping_options': shipping_data}
 
 @app.post('/shipping')
-def shipping(data: Request, token: str = Header(...)) -> list:
+def shipping(data: Request, token: str = Header(...)) -> dict:
 	env_token = environ.get('TOKEN')
 
 	if env_token is None or env_token != token:
@@ -95,17 +129,34 @@ def shipping(data: Request, token: str = Header(...)) -> list:
 		'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
 		'Accept-Language': 'pt-BR,pt;q=0.9'
 	}
+	failed = []
 
 	for variant in data.variants:
-		res = add_to_cart(session, variant)
-		print(f'site response: ({res.status_code}) \"{res.text}\"')
+		json_res = add_to_cart(session, variant).json()
 
-	cart = res.json().get('cart', {})
+		if not json_res.get('success'):
+			failed.append({
+				'response': json_res,
+				'variant_id': variant.id,
+				'product_id': variant.product_id
+			})
+
+	if failed:
+		return {
+			'error': True,
+			'message': 'Falhou ao adicionar produtos ao carrinho',
+			'data': failed
+		}
+
+	cart = json_res.get('cart', {})
 	products = cart.get('products', [])
 
 	print(f'cart id: {cart.get("id")}')
 
 	checkout_token = go_to_checkout(session, products)
+
+	if checkout_token is None:
+		return {'error': True, 'message': 'Falhou em calcular o frete'}
 
 	print(f'checkout token: {checkout_token}')
 
